@@ -26,8 +26,9 @@ abstract class SendWriteReqGeneratorTest[T <: SendWriteReqGenerator]
       val naturalNumItr = NaturalNumber.from(1).iterator
 
       dut.io.qpAttr.pmtu #= pmtuLen.id
-      dut.io.txQCtrl.wrongStateFlush #= false
-      dut.io.txQCtrl.retryFlush #= false
+      dut.io.flush #= false
+//      dut.io.txQCtrl.wrongStateFlush #= false
+//      dut.io.txQCtrl.retryFlush #= false
 
       // Input to DUT
       streamMasterDriver(dut.io.cachedWorkReqAndDmaReadResp, dut.clockDomain) {
@@ -71,8 +72,9 @@ abstract class SendWriteReqGeneratorTest[T <: SendWriteReqGenerator]
       val outputDataQueue = mutable.Queue[(PktFragData, MTY, PSN, FragLast)]()
 
       dut.io.qpAttr.pmtu #= pmtuLen.id
-      dut.io.txQCtrl.wrongStateFlush #= false
-      dut.io.txQCtrl.retryFlush #= false
+      dut.io.flush #= false
+//      dut.io.txQCtrl.wrongStateFlush #= false
+//      dut.io.txQCtrl.retryFlush #= false
       dut.io.cachedWorkReqAndDmaReadResp.valid #= false
       dut.clockDomain.waitSampling()
 

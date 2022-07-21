@@ -171,7 +171,8 @@ case class RamScanOut[T <: Data](valueType: HardType[T]) extends Bundle {
   val retryCnt = UInt(RETRY_COUNT_WIDTH bits)
 }
 
-class RamScan[T <: Data](valueType: HardType[T], depth: Int) extends Component {
+class RamRetryScan[T <: Data](valueType: HardType[T], depth: Int)
+    extends Component {
   require(depth >= 4, s"RamScan minimum depth=${depth} is 4")
   require(isPow2(depth), s"RamScan depth=${depth} must be power of 2")
   val depthWidth = log2Up(depth)
@@ -451,17 +452,15 @@ class ReadAtomicRstCache(depth: Int) extends Component {
 class WorkReqCache(depth: Int) extends Component {
   val io = new Bundle {
     val qpAttr = in(QpAttrData())
-    val txQCtrl = in(TxQCtrl())
+    val flush = in(Bool())
+//    val txQCtrl = in(TxQCtrl())
     val push = slave(Stream(CachedWorkReq()))
     val pop = master(Stream(CachedWorkReq()))
     val occupancy = out(UInt(log2Up(depth + 1) bits))
     val empty = out(Bool())
     val full = out(Bool())
     val retryScanCtrlBus = slave(RamScanCtrlBus())
-    val retryWorkReq = master(Stream(RamScanOut(CachedWorkReq())))
-//    val queryPort4SqReqDmaRead = slave(WorkReqCacheQueryBus())
-//    val queryPort4SqRespDmaWrite = slave(WorkReqCacheQueryBus())
-//    val queryPort4DupReqDmaRead = slave(WorkReqCacheQueryBus())
+    val retryWorkReq = master(Stream(RetryWorkReq()))
   }
 
   val fifo = new Fifo(
@@ -481,7 +480,7 @@ class WorkReqCache(depth: Int) extends Component {
     (isOutputReadWorkReq || isOutputAtomicWorkReq) && fifo.io.pop.fire
 
   val readAtomicWorkReqCnt = Counter(widthOf(fifo.io.occupancy) bits)
-  when(io.txQCtrl.wrongStateFlush) {
+  when(io.flush) {
     readAtomicWorkReqCnt := 0
   } elsewhen (incReadAtomicWorkReqCnt && !decReadAtomicWorkReqCnt) {
     readAtomicWorkReqCnt.increment()
@@ -513,61 +512,26 @@ class WorkReqCache(depth: Int) extends Component {
   io.full := fifo.io.full || workReqCacheFull || readAtomicWorkReqFull
   io.empty := fifo.io.empty
   io.occupancy := fifo.io.occupancy
-  fifo.io.flush := io.txQCtrl.wrongStateFlush
+  fifo.io.flush := io.flush
 
-  val scan = new RamScan(
+  val scan = new RamRetryScan(
     valueType = CachedWorkReq(),
     depth = depth
   )
-  scan.io.flush := io.txQCtrl.wrongStateFlush
+  scan.io.flush := io.flush
   scan.io.pushPtr := fifo.io.pushPtr
   scan.io.popPtr := fifo.io.popPtr
   scan.io.pushing := fifo.io.pushing
   scan.io.popping := fifo.io.popping
   scan.io.ram := fifo.io.ram
   scan.io.scanCtrlBus << io.retryScanCtrlBus
-  io.retryWorkReq << scan.io.scanOut
-
-  when(io.txQCtrl.retry) {
-    assert(
-      assertion = stable(fifo.io.pushPtr),
-      message =
-        L"${REPORT_TIME} time: during retry, no new WR can be added".toSeq,
-      severity = FAILURE
-    )
+  io.retryWorkReq << scan.io.scanOut.map { payloadData =>
+    val result = cloneOf(io.retryWorkReq.payloadType)
+    result.cachedWorkReq := payloadData.scanOutData
+    result.rnrCnt := payloadData.rnrCnt
+    result.retryCnt := payloadData.retryCnt
+    result
   }
-
-  // TODO: remove cam from WorkReqCache
-//  val cam = new Cam(
-//    WorkReqCacheQueryReq(),
-//    CachedWorkReq(),
-//    queryFunc = (k: WorkReqCacheQueryReq, v: CachedWorkReq) =>
-//      // TODO: verify PSN comparison correctness
-//      //        k.workReqOpCode === v.workReq.opcode &&
-//      PsnUtil.lte(v.psnStart, k.queryPsn, k.npsn) &&
-//        PsnUtil.lt(k.queryPsn, v.psnStart + v.pktNum, k.npsn),
-//    depth = depth,
-//    portCount = 1
-//  )
-//  cam.io.ram := fifo.io.ram
-
-//  when(io.empty) {
-//    assert(
-//      assertion = !io.queryPort4SqRespDmaWrite.req.valid,
-//      message = L"when io.empty=${io.empty}, no query request allowed, but io.queryPort4SqRespDmaWrite.req.valid=${io.queryPort4SqRespDmaWrite.req.valid}, and io.queryPort4SqRespDmaWrite.req.queryPsn=${io.queryPort4SqRespDmaWrite.req.queryPsn}",
-//      severity = FAILURE
-//    )
-//  }
-
-//  val queryPortVec = Vec(
-////    io.queryPort4SqReqDmaRead,
-//    io.queryPort4SqRespDmaWrite
-////    io.queryPort4DupReqDmaRead
-//  )
-//  for ((queryPort, portIdx) <- queryPortVec.zipWithIndex) {
-//    cam.io.queryBusVec(portIdx).req << queryPort.req
-//    queryPort.resp << cam.io.queryBusVec(portIdx).resp
-//  }
 }
 
 // TODO: check MR size and permission
@@ -754,47 +718,6 @@ class QpAddrCacheAgent extends Component {
     )
 
   val (rqIdx, sqReqIdx, sqRespIdx) = (0, 1, 2)
-  /*
-  val txSel = UInt(2 bits)
-  switch(io.pdAddrCacheQuery.resp.initiator) {
-    is(AddrQueryInitiator.RQ) {
-      txSel := rqIdx
-    }
-    is(AddrQueryInitiator.SQ_REQ) {
-      txSel := sqReqIdx
-    }
-    is(AddrQueryInitiator.SQ_RESP) {
-      txSel := sqRespIdx
-    }
-//    default {
-//      report(
-//        message =
-//          L"${REPORT_TIME} time: unknown AddrQueryInitiator=${io.pdAddrCacheQuery.resp.initiator}",
-//        severity = FAILURE
-//      )
-//      txSel := otherIdx
-//    }
-  }
-  Vec(
-    io.rqCacheRead.resp,
-    io.sqReqCacheRead.resp,
-    io.sqRespCacheRead.resp
-  ) <-/< StreamDemux(
-    io.pdAddrCacheQuery.resp.translateWith {
-      val result = cloneOf(io.rqCacheRead.resp.payloadType)
-      result.assignSomeByName(io.pdAddrCacheQuery.resp.payload)
-//      result.sqpn := io.pdAddrCacheQuery.resp.sqpn
-//      result.psn := io.pdAddrCacheQuery.resp.psn
-//      result.keyValid := io.pdAddrCacheQuery.resp.keyValid
-//      result.sizeValid := io.pdAddrCacheQuery.resp.sizeValid
-//      result.accessValid := io.pdAddrCacheQuery.resp.accessValid
-//      result.pa := io.pdAddrCacheQuery.resp.pa
-      result
-    },
-    select = txSel,
-    portCount = 3
-  )
-   */
   val isInitiatorRQ =
     io.pdAddrCacheQuery.resp.initiator === AddrQueryInitiator.RQ
   val isInitiatorSqReq =

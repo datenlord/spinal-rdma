@@ -83,7 +83,7 @@ object SendWriteReqReadRespInputGen {
   }
 
   private def genPayloadLen() = {
-    val avgReqRespLen = maxReqRespLen / MAX_PENDING_REQ_NUM
+    val avgReqRespLen = maxReqRespLen / MAX_PENDING_WORK_REQ_NUM
     val dmaRespIdxGen = NaturalNumber.from(0)
 
     // The total request/response length is from 1 byte to 2G=2^31 bytes
@@ -459,11 +459,18 @@ object MiscUtils {
     )
     val remainder = pktLenBytes & setAllBits(pmtu.id)
     val quotient = pktLenBytes >> pmtu.id
-    if (remainder > 0) {
+    val pktNum = if (pktLenBytes == 0) {
+      1 // Even packet length is zero, packet number is one
+    } else if (remainder > 0) {
       (quotient + 1).toInt
     } else {
       quotient.toInt
     }
+
+    pktNum should be > 0 withClue
+      f"${simTime()} time: pktNum=${pktNum}%X should > 0, pktLenBytes=${pktLenBytes}%X, pmtu=${pmtu}"
+
+    pktNum
   }
 
   def getPmtuPktLenBytes(pmtu: PMTU.Value): Int = {

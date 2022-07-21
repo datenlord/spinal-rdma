@@ -441,8 +441,9 @@ class WorkReqCacheTest extends AnyFunSuite {
     dut.io.qpAttr.maxDstPendingWorkReqNum #= depth
     dut.io.qpAttr.maxPendingReadAtomicWorkReqNum #= depth
     dut.io.qpAttr.maxDstPendingReadAtomicWorkReqNum #= depth
-    dut.io.txQCtrl.retry #= false
-    dut.io.txQCtrl.wrongStateFlush #= false
+    dut.io.flush #= false
+//    dut.io.txQCtrl.retry #= false
+//    dut.io.txQCtrl.wrongStateFlush #= false
 
     dut.io.retryWorkReq.ready #= false
     dut.io.retryScanCtrlBus.startPulse #= false
@@ -523,8 +524,9 @@ class WorkReqCacheTest extends AnyFunSuite {
       dut.io.qpAttr.maxDstPendingWorkReqNum #= depth
       dut.io.qpAttr.maxPendingReadAtomicWorkReqNum #= depth
       dut.io.qpAttr.maxDstPendingReadAtomicWorkReqNum #= depth
-      dut.io.txQCtrl.retry #= false
-      dut.io.txQCtrl.wrongStateFlush #= false
+      dut.io.flush #= false
+//      dut.io.txQCtrl.retry #= false
+//      dut.io.txQCtrl.wrongStateFlush #= false
 
       val retryTimes = 5
 
@@ -628,24 +630,24 @@ class WorkReqCacheTest extends AnyFunSuite {
             dut.io.retryScanCtrlBus.startPulse #= false
 
             // Set retry state and wait for retry done
-            dut.io.txQCtrl.retry #= true
+//            dut.io.txQCtrl.retry #= true
             dut.clockDomain.waitSamplingWhere(
               dut.io.retryScanCtrlBus.donePulse.toBoolean
             )
-            dut.io.txQCtrl.retry #= false
+//            dut.io.txQCtrl.retry #= false
             dut.clockDomain.waitSampling()
           }
-          //          println(
-          //            f"${simTime()} time: retry done=${dut.io.retryScanCtrlBus.donePulse.toBoolean}"
-          //          )
+//          println(
+//            f"${simTime()} time: retry done=${dut.io.retryScanCtrlBus.donePulse.toBoolean}"
+//          )
 
           // Clear WorkReqCache
           dut.io.pop.ready #= true
           dut.clockDomain.waitSamplingWhere(dut.io.empty.toBoolean)
           dut.io.pop.ready #= false
-          //          println(
-          //            f"${simTime()} time: pop from WR cache until empty=${dut.io.empty.toBoolean}"
-          //          )
+//          println(
+//            f"${simTime()} time: pop from WR cache until empty=${dut.io.empty.toBoolean}"
+//          )
         }
       }
 
@@ -744,21 +746,21 @@ class WorkReqCacheTest extends AnyFunSuite {
       onStreamFire(dut.io.retryWorkReq, dut.clockDomain) {
         val rnrCnt = dut.io.retryWorkReq.rnrCnt.toInt
         val retryCnt = dut.io.retryWorkReq.retryCnt.toInt
-        val psnStart = dut.io.retryWorkReq.scanOutData.psnStart.toInt
+        val psnStart = dut.io.retryWorkReq.cachedWorkReq.psnStart.toInt
         val workReqOpCode =
-          dut.io.retryWorkReq.scanOutData.workReq.opcode.toEnum
+          dut.io.retryWorkReq.cachedWorkReq.workReq.opcode.toEnum
         if (rnrCnt >= retryTimes || retryCnt >= retryTimes) {
-          //          println(f"${simTime()} time, dut.io.retryWorkReq.scanOutData.psnStart=${psnStart}%X, workReqOpCode=${workReqOpCode}, rnrCnt=${rnrCnt}, retryCnt=${retryCnt}")
+//          println(f"${simTime()} time, dut.io.retryWorkReq.scanOutData.psnStart=${psnStart}%X, workReqOpCode=${workReqOpCode}, rnrCnt=${rnrCnt}, retryCnt=${retryCnt}")
           retryOutQueue.enqueue(
             (
-              dut.io.retryWorkReq.scanOutData.workReq.id.toBigInt,
-              dut.io.retryWorkReq.scanOutData.pa.toBigInt,
+              dut.io.retryWorkReq.cachedWorkReq.workReq.id.toBigInt,
+              dut.io.retryWorkReq.cachedWorkReq.pa.toBigInt,
               psnStart,
-              dut.io.retryWorkReq.scanOutData.pktNum.toInt,
-              dut.io.retryWorkReq.scanOutData.workReq.lenBytes.toLong,
+              dut.io.retryWorkReq.cachedWorkReq.pktNum.toInt,
+              dut.io.retryWorkReq.cachedWorkReq.workReq.lenBytes.toLong,
               workReqOpCode,
-              dut.io.retryWorkReq.scanOutData.workReq.raddr.toBigInt,
-              dut.io.retryWorkReq.scanOutData.workReq.rkey.toLong,
+              dut.io.retryWorkReq.cachedWorkReq.workReq.raddr.toBigInt,
+              dut.io.retryWorkReq.cachedWorkReq.workReq.rkey.toLong,
               rnrCnt,
               retryCnt
             )

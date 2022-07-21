@@ -5,7 +5,6 @@ import spinal.core.formal._
 import spinal.lib._
 import spinal.lib.fsm._
 
-//import ConstantSettings._
 import RdmaConstants._
 import StreamVec._
 
@@ -52,7 +51,6 @@ class FlowCtrl(busWidth: BusWidth.Value) extends Component {
 //  }
 }
 
-// TODO: implement FSM to control RNR, retry status
 class QpCtrl extends Component {
   val io = new Bundle {
     val psnInc = in(PsnIncNotifier())
@@ -428,7 +426,7 @@ class QpCtrl extends Component {
         qpAttr.receivedRnrTimeOut := io.sqNotifier.retry.receivedRnrTimeOut
       }
       whenIsActive {
-        // retryFlushDone just means first retry WR sent, it needs to wait for new responses, stop flushing responses
+        // retryFlushDone just means no normal WR pending
         when(isQpErr) {
           goto(WAITING)
         } elsewhen (io.sqNotifier.retryClear.retryFlushDone) {
@@ -446,39 +444,6 @@ class QpCtrl extends Component {
         }
       }
     }
-
-//    val RETRY: State = new StateFsm(sqRetryFsm) {
-//      whenIsActive {
-//        when(isQpErr) {
-//          // TODO: check if it needs to exit the internal FSM
-//          sqRetryFsm.exitFsm()
-//          goto(WAITING)
-//        }
-//      }
-//      whenCompleted {
-//        when(isQpErr) {
-//          goto(WAITING)
-//        } otherwise {
-//          goto(NORMAL)
-//        }
-//      }
-//    }
-
-//    val FENCE: State = new StateFsm(fenceFsm) {
-//      whenIsActive {
-//        when(!isSqWorking) {
-//          fenceFsm.exitFsm()
-//          goto(WAITING)
-//        }
-//      }
-//      whenCompleted {
-//        when(!isSqWorking) {
-//          goto(WAITING)
-//        } otherwise {
-//          goto(NORMAL)
-//        }
-//      }
-//    }
   }
 
   val sqFsm = sqInternalFsm()
@@ -517,7 +482,7 @@ class QpCtrl extends Component {
   val isQpStateWrong = mainFsm.isActive(mainFsm.ERR) ||
     mainFsm.isActive(mainFsm.RESET) || mainFsm.isActive(mainFsm.INIT)
   io.txQCtrl.errorFlush := errFsm.isActive(errFsm.ERR_FLUSH)
-  io.txQCtrl.retry := fsmInRetryState
+  io.txQCtrl.retryStage := fsmInRetryState
   io.txQCtrl.retryStartPulse := io.sqNotifier.retry.needRetry()
   io.txQCtrl.retryFlush := retryFlushState
   io.txQCtrl.wrongStateFlush := isQpStateWrong
@@ -529,9 +494,10 @@ class QpCtrl extends Component {
     .isActive(rqFsm.NAK_SEQ)
 //  io.rxQCtrl.rnrTriggered := rqFsm.isActive(rqFsm.RNR_TRIGGERED)
 //  io.rxQCtrl.rnrTimeOut := rqFsm.isActive(rqFsm.RNR_TIMEOUT)
-  io.rxQCtrl.rnrFlush := rqFsm.isActive(rqFsm.RNR_TRIGGERED) || rqFsm.isActive(
-    rqFsm.RNR_TIMEOUT
-  ) || rqFsm.isActive(rqFsm.RNR)
+  io.rxQCtrl.rnrFlush :=
+    rqFsm.isActive(rqFsm.RNR_TRIGGERED) ||
+      rqFsm.isActive(rqFsm.RNR_TIMEOUT) ||
+      rqFsm.isActive(rqFsm.RNR)
   io.rxQCtrl.isRetryNakNotCleared := io.rxQCtrl.rnrFlush || io.rxQCtrl.nakSeqFlush
 }
 
@@ -588,23 +554,12 @@ class QP(busWidth: BusWidth.Value) extends Component {
   addrCacheAgent.io.sqRespCacheRead << sq.io.addrCacheRead4Resp
   io.pdAddrCacheQuery << addrCacheAgent.io.pdAddrCacheQuery
 
-  val dmaRdReqVec = Vec(sq.io.dma.dmaRdReqVec ++ rq.io.dma.dmaRdReqVec)
-  val dmaWrReqVec = Vec(rq.io.dma.dmaWrReqVec ++ sq.io.dma.dmaWrReqVec)
-  io.dma.rd.arbitReq(dmaRdReqVec)
-  io.dma.rd.deMuxRespByInitiator(
-    rqRead = rq.io.dma.read.resp,
-//    rqDup = rq.io.dma.dupRead.resp,
-    rqAtomicRead = rq.io.dma.atomic.rd.resp,
-    sqRead = sq.io.dma.reqOut.resp
-//    sqDup = sq.io.dma.retry.resp
-  )
-  io.dma.wr.arbitReq(dmaWrReqVec)
-  io.dma.wr.deMuxRespByInitiator(
-    rqWrite = rq.io.dma.sendWrite.resp,
-    rqAtomicWr = rq.io.dma.atomic.wr.resp,
-    sqWrite = sq.io.dma.readResp.resp,
-    sqAtomicWr = sq.io.dma.atomic.resp
-  )
+  val qpDmaHandler = new QpDmaHandler(busWidth = busWidth)
+  qpDmaHandler.io.flush := qpCtrl.io.txQCtrl.wrongStateFlush
+  io.dma << qpDmaHandler.io.dma
+  qpDmaHandler.io.rqDmaBus << rq.io.dma
+  qpDmaHandler.io.sqDmaBus << sq.io.dma
+  sq.io.sqHasPendingDmaReadReq := qpDmaHandler.io.sqHasPendingDmaReadReq
 
   val flowCtrl = new FlowCtrl(busWidth)
   flowCtrl.io.qpAttr := io.qpAttr

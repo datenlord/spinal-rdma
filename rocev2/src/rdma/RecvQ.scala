@@ -975,7 +975,7 @@ class ReqAddrInfoExtractor(busWidth: BusWidth.Value) extends Component {
     // Since the max length of a request is 2^31, and the min PMTU is 256=2^8
     // So the max number of packet is 2^23 < 2^PSN_WIDTH
     val numRespPkt =
-      divideByPmtuUp(payloadData._2.dlen, io.qpAttr.pmtu).resize(PSN_WIDTH)
+      computePktNum(payloadData._2.dlen, io.qpAttr.pmtu).resize(PSN_WIDTH)
     val result = cloneOf(io.rqOutPsnRangeFifoPush.payloadType)
     result.opcode := payloadData._1.pktFrag.bth.opcode
     result.start := payloadData._1.pktFrag.bth.psn
@@ -1871,11 +1871,15 @@ class ReadRespGenerator(busWidth: BusWidth.Value) extends Component {
         psn = curPsn
       )
       val aeth = AETH().set(AckType.NORMAL)
-      val bthMty = Bits(widthOf(bth) / BYTE_WIDTH bits).setAll()
-      val aethMty = Bits(widthOf(aeth) / BYTE_WIDTH bits).setAll()
+
+      val bthByteWidth = widthOf(bth) / BYTE_WIDTH
+      val aethByteWidth = widthOf(aeth) / BYTE_WIDTH
+      val bthMty = Bits(bthByteWidth bits).setAll()
+      val aethMty = Bits(aethByteWidth bits).setAll()
 
       val headerBits = Bits(busWidth.id bits)
       val headerMtyBits = Bits(busWidthBytes bits)
+      val headerLenBytes = UInt(MAX_HEADER_LEN_BYTE_WIDTH bits)
       when(numReadRespPkt > 1) {
         when(curReadRespPktCntVal === 0) {
 //          when(isFromFirstResp) {
@@ -1884,11 +1888,13 @@ class ReadRespGenerator(busWidth: BusWidth.Value) extends Component {
 
           headerBits := mergeRdmaHeader(busWidth, bth, aeth)
           headerMtyBits := mergeRdmaHeaderMty(busWidth, bthMty, aethMty)
+          headerLenBytes := bthByteWidth + aethByteWidth
 //          } otherwise {
 //            opcode := OpCode.RDMA_READ_RESPONSE_MIDDLE.id
 //
 //            headerBits := mergeRdmaHeader(busWidth, bth)
 //            headerMtyBits := mergeRdmaHeaderMty(busWidth, bthMty)
+//            headerLenBytes := bthByteWidth + aethByteWidth
 //          }
         } elsewhen (curReadRespPktCntVal === numReadRespPkt - 1) {
           opcode := OpCode.RDMA_READ_RESPONSE_LAST.id
@@ -1898,14 +1904,14 @@ class ReadRespGenerator(busWidth: BusWidth.Value) extends Component {
 
           headerBits := mergeRdmaHeader(busWidth, bth, aeth)
           headerMtyBits := mergeRdmaHeaderMty(busWidth, bthMty, aethMty)
+          headerLenBytes := bthByteWidth + aethByteWidth
         } otherwise {
           opcode := OpCode.RDMA_READ_RESPONSE_MIDDLE.id
 
           // TODO: verify endian
-//          headerBits := bth.asBits.resize(busWidth.id)
-//          headerMtyBits := bthMty.resize(busWidthBytes)
           headerBits := mergeRdmaHeader(busWidth, bth)
           headerMtyBits := mergeRdmaHeaderMty(busWidth, bthMty)
+          headerLenBytes := bthByteWidth
         }
       } otherwise {
 //        when(isFromFirstResp) {
@@ -1919,12 +1925,20 @@ class ReadRespGenerator(busWidth: BusWidth.Value) extends Component {
 
         headerBits := mergeRdmaHeader(busWidth, bth, aeth)
         headerMtyBits := mergeRdmaHeaderMty(busWidth, bthMty, aethMty)
+        headerLenBytes := bthByteWidth + aethByteWidth
       }
 
       val result = CombineHeaderAndDmaRespInternalRst(busWidth)
-        .set(inputRstCacheData.pktNum, bth, headerBits, headerMtyBits)
+        .set(
+          inputRstCacheData.pktNum,
+          bth,
+          headerBits,
+          headerMtyBits,
+          headerLenBytes
+        )
     }.result
 
+  // TODO: combine normal and duplicate read response generation
   val normalReqResp = CombineHeaderAndDmaResponse(
     normalReqAndDmaReadRespSegment,
     io.qpAttr,

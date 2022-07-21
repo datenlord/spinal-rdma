@@ -69,7 +69,8 @@ import scala.language.postfixOps
 // phys_port_cnt              Number of physical ports
 object ConstantSettings {
   // Device changeable settings
-  val MAX_PENDING_REQ_NUM = 32
+  val MAX_PENDING_WORK_REQ_NUM = 32
+  val MAX_PENDING_WORK_REQ_NUM_WIDTH = log2Up(MAX_PENDING_WORK_REQ_NUM)
   val MAX_PENDING_READ_ATOMIC_REQ_NUM = 16
   val MIN_RNR_TIMEOUT = 1 // 0.01ms = 10us
 
@@ -78,11 +79,11 @@ object ConstantSettings {
   val MAX_SG_LEN_WIDTH = 12 // Max SG size is 4K bytes, a page size
 
   require(
-    MAX_PENDING_REQ_NUM > MAX_PENDING_READ_ATOMIC_REQ_NUM,
-    s"MAX_PENDING_REQ_NUM=${MAX_PENDING_REQ_NUM} should > MAX_PENDING_READ_ATOMIC_REQ_NUM=${MAX_PENDING_READ_ATOMIC_REQ_NUM}"
+    MAX_PENDING_WORK_REQ_NUM > MAX_PENDING_READ_ATOMIC_REQ_NUM,
+    s"MAX_PENDING_REQ_NUM=${MAX_PENDING_WORK_REQ_NUM} should > MAX_PENDING_READ_ATOMIC_REQ_NUM=${MAX_PENDING_READ_ATOMIC_REQ_NUM}"
   )
   // TODO: find out the meaning of this requirement
-  require((2 << MAX_WR_NUM_WIDTH) >= MAX_PENDING_REQ_NUM)
+  require((2 << MAX_WR_NUM_WIDTH) >= MAX_PENDING_WORK_REQ_NUM)
 
 //  val WORK_REQ_CACHE_QUERY_DELAY_CYCLE = 4
 //  val COALESCE_HANDLE_CYCLE = 4
@@ -92,7 +93,7 @@ object ConstantSettings {
   val DMA_READ_DELAY_CYCLES = 16
   val EXTRA_FIFO_DEPTH = 8
 
-  val PENDING_REQ_FIFO_DEPTH = MAX_PENDING_REQ_NUM + EXTRA_FIFO_DEPTH
+  val PENDING_REQ_FIFO_DEPTH = MAX_PENDING_WORK_REQ_NUM + EXTRA_FIFO_DEPTH
   val PENDING_READ_ATOMIC_REQ_FIFO_DEPTH =
     MAX_PENDING_READ_ATOMIC_REQ_NUM + EXTRA_FIFO_DEPTH
   val ADDR_CACHE_QUERY_FIFO_DEPTH =
@@ -101,7 +102,7 @@ object ConstantSettings {
     READ_ATOMIC_RESULT_CACHE_QUERY_DELAY_CYCLES + EXTRA_FIFO_DEPTH
   val DMA_WRITE_FIFO_DEPTH = DMA_WRITE_DELAY_CYCLES + EXTRA_FIFO_DEPTH
   val DMA_READ_FIFO_DEPTH = DMA_READ_DELAY_CYCLES + EXTRA_FIFO_DEPTH
-  val PSN_OUT_RANGE_FIFO_DEPTH = MAX_PENDING_REQ_NUM + EXTRA_FIFO_DEPTH
+  val PSN_OUT_RANGE_FIFO_DEPTH = MAX_PENDING_WORK_REQ_NUM + EXTRA_FIFO_DEPTH
 
   val MAX_COALESCE_ACK_NUM = 8
 
@@ -159,8 +160,9 @@ object ConstantSettings {
 }
 
 object DmaInitiator extends SpinalEnum(binarySequential) {
-  val RQ_RD, RQ_WR, RQ_DUP, RQ_ATOMIC_RD, RQ_ATOMIC_WR, SQ_RD, SQ_WR,
-      SQ_ATOMIC_WR = newElement() // SQ_DUP
+  val RQ_RD, RQ_WR, RQ_DUP, RQ_ATOMIC_RD, RQ_ATOMIC_WR, SQ_RD, SQ_WR =
+    newElement()
+  // SQ_ATOMIC_WR, SQ_DUP
 }
 //object DmaInitiator extends Enumeration {
 //  type DmaInitiator = Value
@@ -213,6 +215,7 @@ object AckType extends SpinalEnum(binarySequential) {
 //  val NAK_RNR = Value(5)
 //}
 
+// TODO: check how to generate each type of SQ error
 object SqErrType extends SpinalEnum(binarySequential) {
   val NO_ERR, INV_REQ, RMT_ACC, RMT_OP, LOC_ERR, RETRY_EXC, RNR_EXC =
     newElement()
@@ -279,7 +282,11 @@ object RdmaConstants {
   val ATOMIC_RESP_WIDTH =
     widthOf(BTH()) + widthOf(AETH()) + widthOf(AtomicAckEth())
 
-  val MAX_HEADER_WIDTH = log2Up(ATOMIC_REQ_WIDTH)
+  val MIN_HEADER_WIDTH = widthOf(BTH())
+  val MAX_HEADER_WIDTH = ATOMIC_REQ_WIDTH
+  val MAX_HEADER_LEN_BYTE_WIDTH = log2Up(
+    MAX_HEADER_WIDTH / ConstantSettings.BYTE_WIDTH
+  )
 
   // RNR timeout settings:
   // 0 - 655.36 milliseconds delay
@@ -848,6 +855,11 @@ object OpCode extends Enumeration {
   def isLastOrOnlyRespPkt(opcode: Bits): Bool =
     new Composite(opcode, "OpCode_isLastOrOnlyRespPkt") {
       val result = isOnlyRespPkt(opcode) || isLastReadRespPkt(opcode)
+    }.result
+
+  def isLastOrOnlyPkt(opcode: Bits): Bool =
+    new Composite(opcode, "OpCode_isLastOrOnlyPkt") {
+      val result = isLastOrOnlyReqPkt(opcode) || isLastOrOnlyRespPkt(opcode)
     }.result
 
   def isWriteFirstReqPkt(opcode: Bits): Bool =

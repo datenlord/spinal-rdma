@@ -40,7 +40,7 @@ class WorkReqValidatorTest extends AnyFunSuite {
     dut.clockDomain.forkStimulus(SIM_CYCLE_TIME)
 
     dut.io.qpAttr.pmtu #= pmtuLen.id
-    dut.io.txQCtrl.retry #= false
+    dut.io.txQCtrl.retryStage #= false
     dut.io.txQCtrl.wrongStateFlush #= !normalOrErrorCase && !addrCacheQueryErrOrFlushErr
 
     val (totalFragNumItr, pktNumItr, psnStartItr, totalLenItr) =
@@ -285,8 +285,9 @@ class WorkReqCacheAndOutPsnRangeHandlerTest extends AnyFunSuite {
   def testFunc(isRetryWorkReq: Boolean): Unit = simCfg.doSim { dut =>
     dut.clockDomain.forkStimulus(SIM_CYCLE_TIME)
 
-    dut.io.txQCtrl.wrongStateFlush #= false
-    dut.io.txQCtrl.retry #= isRetryWorkReq
+    dut.io.flush #= false
+//    dut.io.txQCtrl.wrongStateFlush #= false
+//    dut.io.txQCtrl.retry #= isRetryWorkReq
 
     val inputSendWriteWorkReqOutQueue = mutable.Queue[
       (SpinalEnumElement[WorkReqOpCode.type], PsnStart, PktLen, WorkReqId)
@@ -465,14 +466,14 @@ class WorkReqCacheAndOutPsnRangeHandlerTest extends AnyFunSuite {
       )
     }
 
-    MiscUtils.checkSignalWhen(
-      dut.clockDomain,
-      when =
-        inputWorkReqStream.valid.toBoolean && inputWorkReqStream.ready.toBoolean && isRetryWorkReq,
-      signal = dut.io.retryFlushDone.toBoolean,
-      clue =
-        f"${simTime()} time: dut.io.retryFlushDone=${dut.io.retryFlushDone.toBoolean} should be true when inputWorkReqStream.fire=${inputWorkReqStream.valid.toBoolean && inputWorkReqStream.ready.toBoolean} and isRetryWorkReq=${isRetryWorkReq}"
-    )
+//    MiscUtils.checkSignalWhen(
+//      dut.clockDomain,
+//      when =
+//        inputWorkReqStream.valid.toBoolean && inputWorkReqStream.ready.toBoolean && isRetryWorkReq,
+//      signal = dut.io.retryFlushDone.toBoolean,
+//      clue =
+//        f"${simTime()} time: dut.io.retryFlushDone=${dut.io.retryFlushDone.toBoolean} should be true when inputWorkReqStream.fire=${inputWorkReqStream.valid.toBoolean && inputWorkReqStream.ready.toBoolean} and isRetryWorkReq=${isRetryWorkReq}"
+//    )
     MiscUtils.checkSignalWhen(
       dut.clockDomain,
       when = isRetryWorkReq,
@@ -539,8 +540,9 @@ class SqDmaReadRespHandlerTest extends AnyFunSuite {
       val psnQueue = mutable.Queue[PSN]()
       val matchQueue = mutable.Queue[PSN]()
 
-      dut.io.txQCtrl.retryFlush #= false
-      dut.io.txQCtrl.wrongStateFlush #= false
+      dut.io.flush #= false
+//      dut.io.txQCtrl.retryFlush #= false
+//      dut.io.txQCtrl.wrongStateFlush #= false
 
       // Input to DUT
       streamMasterDriverAlwaysValid(dut.io.cachedWorkReq, dut.clockDomain) {
@@ -596,8 +598,9 @@ class SqDmaReadRespHandlerTest extends AnyFunSuite {
         (PktFragData, PsnStart, PktLen, PktNum, FragLast)
       ]()
 
-      dut.io.txQCtrl.retryFlush #= false
-      dut.io.txQCtrl.wrongStateFlush #= false
+      dut.io.flush #= false
+//      dut.io.txQCtrl.retryFlush #= false
+//      dut.io.txQCtrl.wrongStateFlush #= false
 
       fork {
         val (totalFragNumItr, pktNumItr, psnStartItr, payloadLenItr) =
@@ -742,7 +745,7 @@ class SqOutTest extends AnyFunSuite {
       ],
       inputOutPsnQueue: mutable.Queue[PSN]
   ): Unit =
-    for (_ <- 0 until MAX_PENDING_REQ_NUM) {
+    for (_ <- 0 until MAX_PENDING_WORK_REQ_NUM) {
       val _ = payloadFragNumItr.next()
       val pktNum = pktNumItr.next()
       val psnStart = psnStartItr.next()
@@ -863,9 +866,9 @@ class SqOutTest extends AnyFunSuite {
         ]()
 
       dut.io.qpAttr.pmtu #= pmtuLen.id
-      dut.io.txQCtrl.wrongStateFlush #= false
-      dut.io.txQCtrl.retryFlush #= false
-//      dut.io.txQCtrl.retry #= false
+      dut.io.flush #= false
+//      dut.io.txQCtrl.wrongStateFlush #= false
+//      dut.io.txQCtrl.retryFlush #= false
 
 //      // Disable normal requests or duplicate requests
 //      if (normalOrDupReq) { // Normal requests

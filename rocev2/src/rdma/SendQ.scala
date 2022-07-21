@@ -11,6 +11,7 @@ class SendQ(busWidth: BusWidth.Value) extends Component {
   val io = new Bundle {
     val qpAttr = in(QpAttrData())
     val txQCtrl = in(TxQCtrl())
+    val sqHasPendingDmaReadReq = in(Bool())
     val psnInc = out(SqPsnInc())
     val notifier = out(SqNotifier())
     val workReq = slave(Stream(WorkReq()))
@@ -23,14 +24,23 @@ class SendQ(busWidth: BusWidth.Value) extends Component {
     val workCompErr = master(Stream(WorkComp())) // TODO: remove
   }
 
-  val workReqCache = new WorkReqCache(depth = MAX_PENDING_REQ_NUM)
+  val workReqCache = new WorkReqCache(depth = MAX_PENDING_WORK_REQ_NUM)
   workReqCache.io.qpAttr := io.qpAttr
-  workReqCache.io.txQCtrl := io.txQCtrl
+  workReqCache.io.flush := io.txQCtrl.wrongStateFlush
   io.notifier.workReqCacheEmpty := workReqCache.io.empty
+  when(io.txQCtrl.retryStage) {
+    assert(
+      assertion = !workReqCache.io.push.fire,
+      message =
+        L"${REPORT_TIME} time: during retry, no new WR can be added to WR cache".toSeq,
+      severity = FAILURE
+    )
+  }
 
   val normalAndRetryWorkReqHandler = new NormalAndRetryWorkReqHandler(busWidth)
   normalAndRetryWorkReqHandler.io.qpAttr := io.qpAttr
   normalAndRetryWorkReqHandler.io.txQCtrl := io.txQCtrl
+  normalAndRetryWorkReqHandler.io.sqHasPendingDmaReadReq := io.sqHasPendingDmaReadReq
   normalAndRetryWorkReqHandler.io.workReqCacheEmpty := workReqCache.io.empty
   normalAndRetryWorkReqHandler.io.workReq << io.workReq
   normalAndRetryWorkReqHandler.io.retryWorkReq << workReqCache.io.retryWorkReq
@@ -51,8 +61,9 @@ class SendQ(busWidth: BusWidth.Value) extends Component {
   io.notifier.retry := respHandler.io.retryNotifier
   io.addrCacheRead4Resp << respHandler.io.addrCacheRead
   io.workComp << respHandler.io.workComp
-  io.dma.readResp << respHandler.io.readRespDmaWrite
-  io.dma.atomic << respHandler.io.atomicRespDmaWrite
+  io.dma.respIn << respHandler.io.respDmaWrite
+//  io.dma.readResp << respHandler.io.readRespDmaWrite
+//  io.dma.atomic << respHandler.io.atomicRespDmaWrite
 
   // TODO: handle simultaneous fatal error
   io.notifier.err := normalAndRetryWorkReqHandler.io.errNotifier || respHandler.io.errNotifier
@@ -66,12 +77,13 @@ class NormalAndRetryWorkReqHandler(busWidth: BusWidth.Value) extends Component {
     val qpAttr = in(QpAttrData())
     val txQCtrl = in(TxQCtrl())
     val workReqCacheEmpty = in(Bool())
+    val sqHasPendingDmaReadReq = in(Bool())
     val psnInc = out(SqPsnInc())
     val errNotifier = out(SqErrNotifier())
     val retryClear = out(SqRetryClear())
     val workReq = slave(Stream(WorkReq()))
     val retryScanCtrlBus = master(RamScanCtrlBus())
-    val retryWorkReq = slave(Stream(RamScanOut(CachedWorkReq())))
+    val retryWorkReq = slave(Stream(RetryWorkReq()))
     val addrCacheRead = master(QpAddrCacheAgentReadBus())
     val workReqCachePush = master(Stream(CachedWorkReq()))
     val dmaRead = master(DmaReadBus(busWidth))
@@ -101,23 +113,25 @@ class NormalAndRetryWorkReqHandler(busWidth: BusWidth.Value) extends Component {
   retryHandler.io.qpAttr := io.qpAttr
   retryHandler.io.txQCtrl := io.txQCtrl
   retryHandler.io.retryWorkReqIn << io.retryWorkReq
-  io.retryClear.retryWorkReqDone := retryHandler.io.retryWorkReqDone
   io.retryScanCtrlBus << retryHandler.io.retryScanCtrlBus
+  io.retryClear.retryWorkReqDone := retryHandler.io.retryWorkReqDone
 
+  io.retryClear.retryFlushDone := !io.sqHasPendingDmaReadReq
   io.errNotifier := normalWorkReq.workReqValidator.io.errNotifier || retryHandler.io.errNotifier
 
   val workReqCacheAndOutPsnRangeHandler = new WorkReqCacheAndOutPsnRangeHandler
 //  workReqCacheAndOutPsnRangeHandler.io.qpAttr := io.qpAttr
-  workReqCacheAndOutPsnRangeHandler.io.txQCtrl := io.txQCtrl
+  workReqCacheAndOutPsnRangeHandler.io.flush := io.txQCtrl.wrongStateFlush
+  workReqCacheAndOutPsnRangeHandler.io.isRetryStage := io.txQCtrl.retryStage
+  workReqCacheAndOutPsnRangeHandler.io.isRetryFlushStage := io.txQCtrl.retryFlush
   workReqCacheAndOutPsnRangeHandler.io.normalWorkReq << normalWorkReq.workReqFenceHandler.io.workReqOut
   workReqCacheAndOutPsnRangeHandler.io.retryWorkReq << retryHandler.io.retryWorkReqOut
-  io.retryClear.retryFlushDone := workReqCacheAndOutPsnRangeHandler.io.retryFlushDone
 //  io.sqOutPsnRangeFifoPush << workReqCacheAndOutPsnRangeHandler.io.sqOutPsnRangeFifoPush
   io.workReqCachePush << workReqCacheAndOutPsnRangeHandler.io.workReqCachePush
 
   val sqReqGenerator = new SqReqGenerator(busWidth)
   sqReqGenerator.io.qpAttr := io.qpAttr
-  sqReqGenerator.io.txQCtrl := io.txQCtrl
+  sqReqGenerator.io.flush := io.txQCtrl.wrongStateFlush || io.txQCtrl.retryFlush
   sqReqGenerator.io.sendWriteNormalWorkReq << workReqCacheAndOutPsnRangeHandler.io.sendWriteWorkReqOut
   sqReqGenerator.io.readNormalWorkReq << workReqCacheAndOutPsnRangeHandler.io.readWorkReqOut
   sqReqGenerator.io.atomicNormalWorkReq << workReqCacheAndOutPsnRangeHandler.io.atomicWorkReqOut
@@ -125,7 +139,7 @@ class NormalAndRetryWorkReqHandler(busWidth: BusWidth.Value) extends Component {
 
   val sqOut = new SqOut(busWidth)
   sqOut.io.qpAttr := io.qpAttr
-  sqOut.io.txQCtrl := io.txQCtrl
+  sqOut.io.flush := io.txQCtrl.wrongStateFlush || io.txQCtrl.retryFlush
   sqOut.io.rxSendReq << sqReqGenerator.io.txSendReq
   sqOut.io.rxWriteReq << sqReqGenerator.io.txWriteReq
   sqOut.io.rxAtomicReq << sqReqGenerator.io.txAtomicReq
@@ -158,11 +172,11 @@ class WorkReqValidator extends Component {
       io.workReq
         // Cannot throw WR here, since it needs to generate error WC when flush
 //        .throwWhen(io.txQCtrl.wrongStateFlush)
-        .haltWhen(io.txQCtrl.retry)
+        .haltWhen(io.txQCtrl.retryStage)
     )
 
     // Update nPSN each time io.workReq fires
-    val numReqPkt = divideByPmtuUp(workReq.lenBytes, io.qpAttr.pmtu)
+    val numReqPkt = computePktNum(workReq.lenBytes, io.qpAttr.pmtu)
 
     io.npsnInc.incVal := numReqPkt.resize(PSN_WIDTH)
     io.npsnInc.inc := io.workReq.fire && !io.txQCtrl.wrongStateFlush
@@ -182,26 +196,7 @@ class WorkReqValidator extends Component {
       flush = io.txQCtrl.wrongStateFlush,
       queueName = "inputWorkReqQueue"
     )
-    /*
-        val inputWorkReqQueue =
-          StreamFifoLowLatency(WorkReqAndMetaData(), ADDR_CACHE_QUERY_FIFO_DEPTH)
-        inputWorkReqQueue.io.push << workReq4Queue
-          .translateWith {
-            val result = cloneOf(inputWorkReqQueue.dataType) // WorkReqAndMetaData()
-            result.workReq := workReq
-            result.psnStart := io.qpAttr.npsn
-            result.pktNum := numReqPkt.resize(PSN_WIDTH)
-            result
-          }
-        inputWorkReqQueue.io.flush := io.txQCtrl.wrongStateFlush
-        assert(
-          assertion = inputWorkReqQueue.io.push.ready,
-          message =
-            L"inputWorkReqQueue is full, inputWorkReqQueue.io.push.ready=${inputWorkReqQueue.io.push.ready}, inputWorkReqQueue.io.occupancy=${inputWorkReqQueue.io.occupancy}, which is not allowed in WorkReqValidator".toSeq,
-          severity = FAILURE
-        )
-        val inputWorkReqQueuePop = inputWorkReqQueue.io.pop.combStage()
-     */
+
     io.addrCacheRead.req <-/< workReq4AddrCacheQuery
       .throwWhen(io.txQCtrl.wrongStateFlush)
       .translateWith {
@@ -302,17 +297,14 @@ class WorkReqValidator extends Component {
   }
 }
 
+// TODO: consider support SQD
 class WorkReqFenceHandler extends Component {
   val io = new Bundle {
     val qpAttr = in(QpAttrData())
     val txQCtrl = in(TxQCtrl())
     val normalWorkReq = slave(Stream(CachedWorkReq()))
-//    val workReqHasFence = out(Bool())
     val workReqCacheEmpty = in(Bool())
     val workReqOut = master(Stream(CachedWorkReq()))
-//    val sendWriteWorkReqOut = master(Stream(CachedWorkReq()))
-//    val readWorkReqOut = master(Stream(CachedWorkReq()))
-//    val atomicWorkReqOut = master(Stream(CachedWorkReq()))
   }
 
   val cachedWorkReqValid = io.normalWorkReq.valid
@@ -326,16 +318,16 @@ class WorkReqFenceHandler extends Component {
 
   io.workReqOut <-/< io.normalWorkReq
     .throwWhen(io.txQCtrl.wrongStateFlush)
-    // TODO: consider remove FENCE state from QP state machine?
-    .haltWhen(
-      io.txQCtrl.retry || fenceWaitCond
-    )
+    .haltWhen(io.txQCtrl.retryStage || fenceWaitCond)
 }
 
 class WorkReqCacheAndOutPsnRangeHandler extends Component {
   val io = new Bundle {
 //    val qpAttr = in(QpAttrData())
-    val txQCtrl = in(TxQCtrl())
+    val flush = in(Bool())
+    val isRetryStage = in(Bool())
+    val isRetryFlushStage = in(Bool())
+//    val txQCtrl = in(TxQCtrl())
     val normalWorkReq = slave(Stream(CachedWorkReq()))
     val retryWorkReq = slave(Stream(CachedWorkReq()))
     val workReqCachePush = master(Stream(CachedWorkReq()))
@@ -343,37 +335,51 @@ class WorkReqCacheAndOutPsnRangeHandler extends Component {
     val readWorkReqOut = master(Stream(CachedWorkReq()))
     val atomicWorkReqOut = master(Stream(CachedWorkReq()))
     val sqOutPsnRangeFifoPush = master(Stream(ReqPsnRange()))
-    val retryFlushDone = out(Bool())
+//    val retryFlushDone = out(Bool())
   }
 
+  // Only flush when error to throw all WR
   val selectedWorkReq = StreamMux(
-    select = io.txQCtrl.retry.asUInt,
+    select = io.isRetryStage.asUInt,
     inputs = Vec(
-      io.normalWorkReq.throwWhen(io.txQCtrl.wrongStateFlush),
-      io.retryWorkReq.throwWhen(io.txQCtrl.wrongStateFlush)
+      io.normalWorkReq.throwWhen(io.flush),
+      io.retryWorkReq.throwWhen(io.flush).haltWhen(io.isRetryFlushStage)
     )
   )
-  io.retryFlushDone := selectedWorkReq.fire && io.txQCtrl.retry
+//  io.retryFlushDone := selectedWorkReq.fire && io.txQCtrl.retryFlush
 
   val (workReq4CachePush, workReq4Output, workReq4OutPsnRangeFifoPUsh) =
     StreamFork3(selectedWorkReq)
 
   io.sqOutPsnRangeFifoPush <-/< workReq4OutPsnRangeFifoPUsh
-    .throwWhen(io.txQCtrl.wrongStateFlush)
+//    .throwWhen(io.txQCtrl.wrongStateFlush)
     .map { payloadData =>
       val psnEnd = payloadData.psnStart + (payloadData.pktNum - 1)
-//    report(L"${REPORT_TIME} time: psnStart=${payloadData.psnStart}, pktNum=${payloadData.pktNum}, psnEnd=${psnEnd}")
+//      report(
+//        L"${REPORT_TIME} time: psnStart=${payloadData.psnStart}, pktNum=${payloadData.pktNum}, psnEnd=${psnEnd}".toSeq
+//      )
+
       val result = cloneOf(io.sqOutPsnRangeFifoPush.payloadType)
       result.workReqOpCode := payloadData.workReq.opcode
       result.start := payloadData.psnStart
-      result.end := psnEnd.resize(PSN_WIDTH)
-      result.isRetryWorkReq := io.txQCtrl.retry
+      when(
+        WorkReqOpCode.isReadReq(payloadData.workReq.opcode) || WorkReqOpCode
+          .isAtomicReq(payloadData.workReq.opcode)
+      ) {
+        // For read/atomic WR, its request packet length is one
+        result.end := payloadData.psnStart
+      } otherwise {
+        result.end := psnEnd.resize(PSN_WIDTH)
+      }
+      result.isRetryWorkReq := io.isRetryStage
       result
     }
 
-  io.workReqCachePush <-/< workReq4CachePush
-    // When retry state, no need to push to WR cache
-    .throwWhen(io.txQCtrl.wrongStateFlush || io.txQCtrl.retry)
+  // When retry, no need to push to WR cache
+  // So workReq4CachePush must have no delay from selectedWorkReq
+  io.workReqCachePush <-/< workReq4CachePush.throwWhen(
+    io.isRetryFlushStage || io.isRetryStage
+  )
 
   val isSendWorkReq = WorkReqOpCode.isSendReq(workReq4Output.workReq.opcode)
   val isWriteWorkReq = WorkReqOpCode.isWriteReq(workReq4Output.workReq.opcode)
@@ -395,7 +401,8 @@ class WorkReqCacheAndOutPsnRangeHandler extends Component {
 class SqOut(busWidth: BusWidth.Value) extends Component {
   val io = new Bundle {
     val qpAttr = in(QpAttrData())
-    val txQCtrl = in(TxQCtrl())
+    val flush = in(Bool())
+//    val txQCtrl = in(TxQCtrl())
     val opsnInc = out(OPsnInc())
     val outPsnRangeFifoPush = slave(Stream(ReqPsnRange()))
     val rxSendReq = slave(RdmaDataBus(busWidth))
@@ -416,7 +423,7 @@ class SqOut(busWidth: BusWidth.Value) extends Component {
   val hasPktToOutput = Bool()
   val (normalReqOut, psnOutRangeQueuePop) = SeqOut(
     curPsn = io.qpAttr.npsn,
-    flush = io.txQCtrl.wrongStateFlush || io.txQCtrl.retryFlush,
+    flush = io.flush,
     outPsnRangeQueuePush = io.outPsnRangeFifoPush,
     outDataStreamVec = normalReqVec,
     outputValidateFunc = (
@@ -437,11 +444,11 @@ class SqOut(busWidth: BusWidth.Value) extends Component {
     hasPktToOutput = hasPktToOutput,
     opsnInc = opsnInc
   )
-  io.opsnInc.inc := opsnInc.inc && !psnOutRangeQueuePop.isRetryWorkReq
-  io.opsnInc.psnVal := opsnInc.psnVal
+  // Update oPSN even when retry
+  io.opsnInc := opsnInc
+//  io.opsnInc.inc := opsnInc.inc && !psnOutRangeQueuePop.isRetryWorkReq
+//  io.opsnInc.psnVal := opsnInc.psnVal
 
-  io.tx.pktFrag <-/< normalReqOut.throwWhen(
-    io.txQCtrl.wrongStateFlush || io.txQCtrl.retryFlush
-  )
+  io.tx.pktFrag <-/< normalReqOut.throwWhen(io.flush)
   checkBthStable(normalReqOut.bth, normalReqOut.isFirst, normalReqOut.valid)
 }

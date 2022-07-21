@@ -6,6 +6,7 @@ import ConstantSettings._
 import RdmaConstants._
 
 import scala.language.postfixOps
+
 // pp.282 spec 1.4
 // The retried request may only reread those portions that were not
 // successfully responded to the first time.
@@ -18,7 +19,7 @@ class RetryHandler extends Component {
     val qpAttr = in(QpAttrData())
     val txQCtrl = in(TxQCtrl())
     val retryScanCtrlBus = master(RamScanCtrlBus())
-    val retryWorkReqIn = slave(Stream(RamScanOut(CachedWorkReq())))
+    val retryWorkReqIn = slave(Stream(RetryWorkReq()))
     val retryWorkReqOut = master(Stream(CachedWorkReq()))
     val errNotifier = out(SqErrNotifier())
     val retryWorkReqDone = out(Bool())
@@ -53,13 +54,13 @@ class RetryHandler extends Component {
     retryDmaReadLenBytes
   ) = PartialRetry.workReqRetry(
     io.qpAttr,
-    retryWorkReq = io.retryWorkReqIn.scanOutData,
+    retryWorkReq = io.retryWorkReqIn.cachedWorkReq,
     retryWorkReqValid = io.retryWorkReqIn.valid
   )
 
   io.retryWorkReqOut <-/< io.retryWorkReqIn.map { payloadData =>
     val result = cloneOf(io.retryWorkReqOut.payloadType)
-    result := payloadData.scanOutData
+    result := payloadData.cachedWorkReq
 
     when(!isRetryWholeWorkReq) {
       result.psnStart := retryStartPsn
@@ -76,7 +77,8 @@ class RetryHandler extends Component {
 class SqReqGenerator(busWidth: BusWidth.Value) extends Component {
   val io = new Bundle {
     val qpAttr = in(QpAttrData())
-    val txQCtrl = in(TxQCtrl())
+    val flush = in(Bool())
+//    val txQCtrl = in(TxQCtrl())
     val sendWriteNormalWorkReq = slave(Stream(CachedWorkReq()))
     val readNormalWorkReq = slave(Stream(CachedWorkReq()))
     val atomicNormalWorkReq = slave(Stream(CachedWorkReq()))
@@ -90,30 +92,30 @@ class SqReqGenerator(busWidth: BusWidth.Value) extends Component {
   val readAtomicGeneratorAndDmaReadInitiator =
     new ReadAtomicGeneratorAndDmaReadInitiator
   readAtomicGeneratorAndDmaReadInitiator.io.qpAttr := io.qpAttr
-  readAtomicGeneratorAndDmaReadInitiator.io.txQCtrl := io.txQCtrl
+  readAtomicGeneratorAndDmaReadInitiator.io.flush := io.flush
   readAtomicGeneratorAndDmaReadInitiator.io.sendWriteWorkReq << io.sendWriteNormalWorkReq
   readAtomicGeneratorAndDmaReadInitiator.io.readWorkReq << io.readNormalWorkReq
   readAtomicGeneratorAndDmaReadInitiator.io.atomicWorkReq << io.atomicNormalWorkReq
   io.dmaRead.req << readAtomicGeneratorAndDmaReadInitiator.io.dmaRead.req
 
   val sqDmaReadRespHandler = new SqDmaReadRespHandler(busWidth)
-  sqDmaReadRespHandler.io.txQCtrl := io.txQCtrl
+  sqDmaReadRespHandler.io.flush := io.flush
   sqDmaReadRespHandler.io.dmaReadResp.resp << io.dmaRead.resp
   sqDmaReadRespHandler.io.cachedWorkReq << readAtomicGeneratorAndDmaReadInitiator.io.outSendWriteWorkReq
 
   val sendWriteReqSegment = new SendWriteReqSegment(busWidth)
   sendWriteReqSegment.io.qpAttr := io.qpAttr
-  sendWriteReqSegment.io.txQCtrl := io.txQCtrl
+  sendWriteReqSegment.io.flush := io.flush
   sendWriteReqSegment.io.cachedWorkReqAndDmaReadResp << sqDmaReadRespHandler.io.cachedWorkReqAndDmaReadResp
 
   val sendReqGenerator = new SendReqGenerator(busWidth)
   sendReqGenerator.io.qpAttr := io.qpAttr
-  sendReqGenerator.io.txQCtrl := io.txQCtrl
+  sendReqGenerator.io.flush := io.flush
   sendReqGenerator.io.cachedWorkReqAndDmaReadResp << sendWriteReqSegment.io.sendCachedWorkReqAndDmaReadResp
 
   val writeReqGenerator = new WriteReqGenerator(busWidth)
   writeReqGenerator.io.qpAttr := io.qpAttr
-  writeReqGenerator.io.txQCtrl := io.txQCtrl
+  writeReqGenerator.io.flush := io.flush
   writeReqGenerator.io.cachedWorkReqAndDmaReadResp << sendWriteReqSegment.io.writeCachedWorkReqAndDmaReadResp
 
   io.txSendReq << sendReqGenerator.io.txReq
@@ -125,7 +127,8 @@ class SqReqGenerator(busWidth: BusWidth.Value) extends Component {
 class ReadAtomicGeneratorAndDmaReadInitiator extends Component {
   val io = new Bundle {
     val qpAttr = in(QpAttrData())
-    val txQCtrl = in(TxQCtrl())
+    val flush = in(Bool())
+//    val txQCtrl = in(TxQCtrl())
     val sendWriteWorkReq = slave(Stream(CachedWorkReq()))
     val readWorkReq = slave(Stream(CachedWorkReq()))
     val atomicWorkReq = slave(Stream(CachedWorkReq()))
@@ -136,26 +139,26 @@ class ReadAtomicGeneratorAndDmaReadInitiator extends Component {
   }
 
   val (sendWriteWorkReq4Out, sendWriteWorkReq4Dma) = StreamFork2(
-    io.sendWriteWorkReq.throwWhen(
-      io.txQCtrl.wrongStateFlush || io.txQCtrl.retryFlush
-    )
+    io.sendWriteWorkReq.throwWhen(io.flush)
   )
   io.outSendWriteWorkReq <-/< sendWriteWorkReq4Out
 
-  io.dmaRead.req <-/< sendWriteWorkReq4Dma.map { payloadData =>
-    val result = cloneOf(io.dmaRead.req.payloadType)
-    result.set(
-      initiator = DmaInitiator.SQ_RD,
-      sqpn = payloadData.workReq.sqpn,
-      psnStart = payloadData.psnStart,
-      pa = payloadData.pa,
-      lenBytes = payloadData.workReq.lenBytes
-    )
-    result
+  val dmaReadLen = sendWriteWorkReq4Dma.workReq.lenBytes
+  io.dmaRead.req <-/< sendWriteWorkReq4Dma.throwWhen(dmaReadLen === 0).map {
+    payloadData =>
+      val result = cloneOf(io.dmaRead.req.payloadType)
+      result.set(
+        initiator = DmaInitiator.SQ_RD,
+        sqpn = payloadData.workReq.sqpn,
+        psnStart = payloadData.psnStart,
+        pa = payloadData.pa,
+        lenBytes = payloadData.workReq.lenBytes
+      )
+      result
   }
 
   io.txReadReq <-/< io.readWorkReq
-    .throwWhen(io.txQCtrl.wrongStateFlush || io.txQCtrl.retryFlush)
+    .throwWhen(io.flush)
     .map { payloadData =>
       val result = ReadReq().set(
         dqpn = io.qpAttr.dqpn,
@@ -168,7 +171,7 @@ class ReadAtomicGeneratorAndDmaReadInitiator extends Component {
     }
 
   io.txAtomicReq <-/< io.atomicWorkReq
-    .throwWhen(io.txQCtrl.wrongStateFlush || io.txQCtrl.retryFlush)
+    .throwWhen(io.flush)
     .map { payloadData =>
       val isCompSwap =
         payloadData.workReq.opcode === WorkReqOpCode.ATOMIC_CMP_AND_SWP
@@ -187,10 +190,10 @@ class ReadAtomicGeneratorAndDmaReadInitiator extends Component {
 
 class SqDmaReadRespHandler(busWidth: BusWidth.Value) extends Component {
   val io = new Bundle {
-    // val qpAttr = in(QpAttrData())
-    val txQCtrl = in(TxQCtrl())
+    val qpAttr = in(QpAttrData())
+//    val txQCtrl = in(TxQCtrl())
+    val flush = in(Bool())
     val cachedWorkReq = slave(Stream(CachedWorkReq()))
-//    val workReqQuery = master(WorkReqCacheQueryBus())
     val dmaReadResp = slave(DmaReadRespBus(busWidth))
     val cachedWorkReqAndDmaReadResp = master(
       Stream(Fragment(CachedWorkReqAndDmaReadResp(busWidth)))
@@ -200,14 +203,13 @@ class SqDmaReadRespHandler(busWidth: BusWidth.Value) extends Component {
   val handlerOutput = DmaReadRespHandler(
     io.cachedWorkReq,
     io.dmaReadResp,
-    // TODO: why flush by retry?
-    io.txQCtrl.wrongStateFlush || io.txQCtrl.retryFlush,
+    io.flush,
     busWidth,
     reqQueueLen = PENDING_REQ_FIFO_DEPTH,
     isReqZeroDmaLen = (req: CachedWorkReq) => req.workReq.lenBytes === 0
   )
   io.cachedWorkReqAndDmaReadResp <-/< handlerOutput
-    .throwWhen(io.txQCtrl.wrongStateFlush || io.txQCtrl.retryFlush)
+    .throwWhen(io.flush)
     .translateWith {
       val result = cloneOf(io.cachedWorkReqAndDmaReadResp)
       result.dmaReadResp := handlerOutput.dmaReadResp
@@ -220,7 +222,8 @@ class SqDmaReadRespHandler(busWidth: BusWidth.Value) extends Component {
 class SendWriteReqSegment(busWidth: BusWidth.Value) extends Component {
   val io = new Bundle {
     val qpAttr = in(QpAttrData())
-    val txQCtrl = in(TxQCtrl())
+    val flush = in(Bool())
+//    val txQCtrl = in(TxQCtrl())
     val cachedWorkReqAndDmaReadResp = slave(
       Stream(Fragment(CachedWorkReqAndDmaReadResp(busWidth)))
     )
@@ -234,7 +237,7 @@ class SendWriteReqSegment(busWidth: BusWidth.Value) extends Component {
 
   val segmentOut = DmaReadRespSegment(
     io.cachedWorkReqAndDmaReadResp,
-    io.txQCtrl.wrongStateFlush || io.txQCtrl.retryFlush,
+    io.flush,
     io.qpAttr.pmtu,
     busWidth,
     isReqZeroDmaLen = (reqAndDmaReadResp: CachedWorkReqAndDmaReadResp) =>
@@ -247,8 +250,8 @@ class SendWriteReqSegment(busWidth: BusWidth.Value) extends Component {
   when(segmentOut.valid) {
     assert(
       assertion = isSendWorkReq || isWriteWorkReq,
-      message =
-        L"${REPORT_TIME} time: the WR for retry here should be send/write, but WR opcode=${cachedWorkReq.workReq.opcode}".toSeq,
+//      message =
+//        L"${REPORT_TIME} time: the WR for retry here should be send/write, but WR opcode=${cachedWorkReq.workReq.opcode}".toSeq,
       severity = FAILURE
     )
   }
@@ -258,7 +261,7 @@ class SendWriteReqSegment(busWidth: BusWidth.Value) extends Component {
     StreamDeMuxByConditions(segmentOut, isSendWorkReq, isWriteWorkReq)
 
   io.sendCachedWorkReqAndDmaReadResp <-/< twoStreams(sendWorkReqIdx)
-    .throwWhen(io.txQCtrl.wrongStateFlush || io.txQCtrl.retryFlush)
+    .throwWhen(io.flush)
     .translateWith {
       val result = cloneOf(io.sendCachedWorkReqAndDmaReadResp.payloadType)
       result.dmaReadResp := twoStreams(sendWorkReqIdx).dmaReadResp
@@ -267,7 +270,7 @@ class SendWriteReqSegment(busWidth: BusWidth.Value) extends Component {
       result
     }
   io.writeCachedWorkReqAndDmaReadResp <-/< twoStreams(writeWorkReqIdx)
-    .throwWhen(io.txQCtrl.wrongStateFlush || io.txQCtrl.retryFlush)
+    .throwWhen(io.flush)
     .translateWith {
       val result = cloneOf(io.writeCachedWorkReqAndDmaReadResp.payloadType)
       result.dmaReadResp := twoStreams(writeWorkReqIdx).dmaReadResp
@@ -281,7 +284,8 @@ abstract class SendWriteReqGenerator(busWidth: BusWidth.Value)
     extends Component {
   val io = new Bundle {
     val qpAttr = in(QpAttrData())
-    val txQCtrl = in(TxQCtrl())
+    val flush = in(Bool())
+//    val txQCtrl = in(TxQCtrl())
     val txReq = master(RdmaDataBus(busWidth))
     val cachedWorkReqAndDmaReadResp = slave(
       Stream(Fragment(CachedWorkReqAndDmaReadResp(busWidth)))
@@ -291,7 +295,7 @@ abstract class SendWriteReqGenerator(busWidth: BusWidth.Value)
   val busWidthBytes = busWidth.id / BYTE_WIDTH
 
   val input = io.cachedWorkReqAndDmaReadResp.throwWhen(
-    io.txQCtrl.wrongStateFlush || io.txQCtrl.retryFlush
+    io.flush
   )
   when(input.valid) {
     assert(
@@ -322,12 +326,12 @@ abstract class SendWriteReqGenerator(busWidth: BusWidth.Value)
   val combinerOutput = CombineHeaderAndDmaResponse(
     reqAndDmaReadRespSegment,
     io.qpAttr,
-    io.txQCtrl.wrongStateFlush || io.txQCtrl.retryFlush,
+    io.flush,
     busWidth,
     headerGenFunc
   )
   io.txReq.pktFrag <-/< combinerOutput.pktFrag.throwWhen(
-    io.txQCtrl.wrongStateFlush || io.txQCtrl.retryFlush
+    io.flush
   )
 }
 
@@ -381,15 +385,19 @@ class SendReqGenerator(busWidth: BusWidth.Value)
         widthOf(immDt) == widthOf(ieth),
         s"widthOf(immDt)=${widthOf(immDt)} should equal widthOf(ieth)=${widthOf(ieth)}"
       )
-      val bthMty = Bits(widthOf(bth) / BYTE_WIDTH bits).setAll()
-      val sendEthMty = Bits(widthOf(immDt) / BYTE_WIDTH bits).setAll()
+
+      val bthByteWidth = widthOf(bth) / BYTE_WIDTH
+      val sendEthByteWidth = widthOf(immDt) / BYTE_WIDTH
+
+      val bthMty = Bits(bthByteWidth bits).setAll()
+      val sendEthMty = Bits(sendEthByteWidth bits).setAll()
 
       val headerBits = Bits(busWidth.id bits)
       val headerMtyBits = Bits(busWidthBytes bits)
-//      headerBits := bth.asBits.resize(busWidth.id)
-//      headerMtyBits := bthMty.resize(busWidthBytes)
+      val headerLenBytes = UInt(MAX_HEADER_LEN_BYTE_WIDTH bits)
       headerBits := mergeRdmaHeader(busWidth, bth)
       headerMtyBits := mergeRdmaHeaderMty(busWidth, bthMty)
+      headerLenBytes := bthByteWidth
       when(numReqPkt > 1) {
         when(curReqPktCntVal === 0) {
           when(isFromFirstReqPkt) {
@@ -404,17 +412,15 @@ class SendReqGenerator(busWidth: BusWidth.Value)
           when(workReqHasImmDt) {
             opcode := OpCode.SEND_LAST_WITH_IMMEDIATE.id
 
-//            headerBits := (bth ## immDt).resize(busWidth.id)
-//            headerMtyBits := (bthMty ## sendEthMty).resize(busWidthBytes)
             headerBits := mergeRdmaHeader(busWidth, bth, immDt)
             headerMtyBits := mergeRdmaHeaderMty(busWidth, bthMty, sendEthMty)
+            headerLenBytes := bthByteWidth + sendEthByteWidth
           } elsewhen (workReqHasIeth) {
             opcode := OpCode.SEND_LAST_WITH_INVALIDATE.id
 
-//            headerBits := (bth ## ieth).resize(busWidth.id)
-//            headerMtyBits := (bthMty ## sendEthMty).resize(busWidthBytes)
             headerBits := mergeRdmaHeader(busWidth, bth, ieth)
             headerMtyBits := mergeRdmaHeaderMty(busWidth, bthMty, sendEthMty)
+            headerLenBytes := bthByteWidth + sendEthByteWidth
           }
 
           padCnt := (PAD_COUNT_FULL -
@@ -437,10 +443,9 @@ class SendReqGenerator(busWidth: BusWidth.Value)
             opcode := OpCode.SEND_LAST_WITH_IMMEDIATE.id
           }
 
-//          headerBits := (bth ## immDt).resize(busWidth.id)
-//          headerMtyBits := (bthMty ## sendEthMty).resize(busWidthBytes)
           headerBits := mergeRdmaHeader(busWidth, bth, immDt)
           headerMtyBits := mergeRdmaHeaderMty(busWidth, bthMty, sendEthMty)
+          headerLenBytes := bthByteWidth + sendEthByteWidth
         } elsewhen (workReqHasIeth) {
           when(isFromFirstReqPkt) {
             opcode := OpCode.SEND_ONLY_WITH_INVALIDATE.id
@@ -448,10 +453,9 @@ class SendReqGenerator(busWidth: BusWidth.Value)
             opcode := OpCode.SEND_LAST_WITH_INVALIDATE.id
           }
 
-//          headerBits := (bth ## ieth).resize(busWidth.id)
-//          headerMtyBits := (bthMty ## sendEthMty).resize(busWidthBytes)
           headerBits := mergeRdmaHeader(busWidth, bth, ieth)
           headerMtyBits := mergeRdmaHeaderMty(busWidth, bthMty, sendEthMty)
+          headerLenBytes := bthByteWidth + sendEthByteWidth
         }
 
         padCnt := (PAD_COUNT_FULL -
@@ -463,7 +467,8 @@ class SendReqGenerator(busWidth: BusWidth.Value)
         numReqPkt,
         bth,
         headerBits,
-        headerMtyBits
+        headerMtyBits,
+        headerLenBytes
       )
     }.result
 }
@@ -517,25 +522,28 @@ class WriteReqGenerator(busWidth: BusWidth.Value)
       val immDt = ImmDt()
       immDt.data := inputCachedWorkReq.immDtOrRmtKeyToInv
 
-      val bthMty = Bits(widthOf(bth) / BYTE_WIDTH bits).setAll()
-      val rethMty = Bits(widthOf(reth) / BYTE_WIDTH bits).setAll()
-      val immDtMty = Bits(widthOf(immDt) / BYTE_WIDTH bits).setAll()
+      val bthByteWidth = widthOf(bth) / BYTE_WIDTH
+      val rethByteWidth = widthOf(reth) / BYTE_WIDTH
+      val immDtByteWidth = widthOf(immDt) / BYTE_WIDTH
+
+      val bthMty = Bits(bthByteWidth bits).setAll()
+      val rethMty = Bits(rethByteWidth bits).setAll()
+      val immDtMty = Bits(immDtByteWidth bits).setAll()
 
       val headerBits = Bits(busWidth.id bits)
       val headerMtyBits = Bits(busWidthBytes bits)
-//      headerBits := bth.asBits.resize(busWidth.id)
-//      headerMtyBits := bthMty.resize(busWidthBytes)
+      val headerLenBytes = UInt(MAX_HEADER_LEN_BYTE_WIDTH bits)
       headerBits := mergeRdmaHeader(busWidth, bth)
       headerMtyBits := mergeRdmaHeaderMty(busWidth, bthMty)
+      headerLenBytes := bthByteWidth
       when(numReqPkt > 1) {
         when(curReqPktCntVal === 0) {
           when(isFromFirstReqPkt) {
             opcode := OpCode.RDMA_WRITE_FIRST.id
 
-//            headerBits := (bth ## reth).resize(busWidth.id)
-//            headerMtyBits := (bthMty ## rethMty).resize(busWidthBytes)
             headerBits := mergeRdmaHeader(busWidth, bth, reth)
             headerMtyBits := mergeRdmaHeaderMty(busWidth, bthMty, rethMty)
+            headerLenBytes := bthByteWidth + rethByteWidth
           } otherwise {
             opcode := OpCode.RDMA_WRITE_MIDDLE.id
           }
@@ -545,11 +553,11 @@ class WriteReqGenerator(busWidth: BusWidth.Value)
           when(workReqHasImmDt) {
             opcode := OpCode.RDMA_WRITE_LAST_WITH_IMMEDIATE.id
 
-//            headerBits := (bth ## immDt).resize(busWidth.id)
-//            headerMtyBits := (bthMty ## immDtMty).resize(busWidthBytes)
             headerBits := mergeRdmaHeader(busWidth, bth, immDt)
             headerMtyBits := mergeRdmaHeaderMty(busWidth, bthMty, immDtMty)
+            headerLenBytes := bthByteWidth + immDtByteWidth
           }
+
           padCnt := (PAD_COUNT_FULL -
             lastOrOnlyReqPktLenBytes(0, PAD_COUNT_WIDTH bits))
             .resize(PAD_COUNT_WIDTH)
@@ -560,10 +568,9 @@ class WriteReqGenerator(busWidth: BusWidth.Value)
         when(isFromFirstReqPkt) {
           opcode := OpCode.RDMA_WRITE_ONLY.id
 
-//          headerBits := (bth ## reth).resize(busWidth.id)
-//          headerMtyBits := (bthMty ## rethMty).resize(busWidthBytes)
           headerBits := mergeRdmaHeader(busWidth, bth, reth)
           headerMtyBits := mergeRdmaHeaderMty(busWidth, bthMty, rethMty)
+          headerLenBytes := bthByteWidth + rethByteWidth
         } otherwise {
           opcode := OpCode.RDMA_WRITE_LAST.id
         }
@@ -572,9 +579,6 @@ class WriteReqGenerator(busWidth: BusWidth.Value)
           when(isFromFirstReqPkt) {
             opcode := OpCode.RDMA_WRITE_ONLY_WITH_IMMEDIATE.id
 
-//            headerBits := (bth ## reth ## immDt).resize(busWidth.id)
-//            headerMtyBits := (bthMty ## rethMty ## immDtMty)
-//              .resize(busWidthBytes)
             headerBits := mergeRdmaHeader(busWidth, bth, reth, immDt)
             headerMtyBits := mergeRdmaHeaderMty(
               busWidth,
@@ -582,15 +586,16 @@ class WriteReqGenerator(busWidth: BusWidth.Value)
               rethMty,
               immDtMty
             )
+            headerLenBytes := bthByteWidth + rethByteWidth + immDtByteWidth
           } otherwise {
             opcode := OpCode.RDMA_WRITE_LAST_WITH_IMMEDIATE.id
 
-//            headerBits := (bth ## immDt).resize(busWidth.id)
-//            headerMtyBits := (bthMty ## immDtMty).resize(busWidthBytes)
             headerBits := mergeRdmaHeader(busWidth, bth, immDt)
             headerMtyBits := mergeRdmaHeaderMty(busWidth, bthMty, immDtMty)
+            headerLenBytes := bthByteWidth + immDtByteWidth
           }
         }
+
         padCnt := (PAD_COUNT_FULL -
           lastOrOnlyReqPktLenBytes(0, PAD_COUNT_WIDTH bits))
           .resize(PAD_COUNT_WIDTH)
@@ -600,7 +605,8 @@ class WriteReqGenerator(busWidth: BusWidth.Value)
         numReqPkt,
         bth,
         headerBits,
-        headerMtyBits
+        headerMtyBits,
+        headerLenBytes
       )
     }.result
 }

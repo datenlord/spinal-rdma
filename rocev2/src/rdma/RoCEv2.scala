@@ -20,7 +20,8 @@ import scala.language.postfixOps
 // - PKey matches.
 // TODO: should support PKey?
 // TODO: check whether it still needs to process pending requests/responses when QP state is ERR
-class HeadVerifier(numMaxQPs: Int, busWidth: BusWidth.Value) extends Component {
+class HeaderVerifier(numMaxQPs: Int, busWidth: BusWidth.Value)
+    extends Component {
   val io = new Bundle {
     val qpAttrVec = in(Vec(QpAttrData(), numMaxQPs))
     val rx = slave(RdmaDataBus(busWidth))
@@ -244,10 +245,10 @@ class AllQpModules(numMaxQPs: Int, busWidth: BusWidth.Value) extends Component {
   udpRdmaPktConverter.io.udpRx << io.rx
   io.tx << udpRdmaPktConverter.io.udpTx
 
-  val headVerifier = new HeadVerifier(numMaxQPs, busWidth)
-  headVerifier.io.qpAttrVec := allQpCtrl.io.qpAttrVec
-  headVerifier.io.rx << udpRdmaPktConverter.io.rdmaRx
-  val rdmaRx = headVerifier.io.tx.pktFrag
+  val headerVerifier = new HeaderVerifier(numMaxQPs, busWidth)
+  headerVerifier.io.qpAttrVec := allQpCtrl.io.qpAttrVec
+  headerVerifier.io.rx << udpRdmaPktConverter.io.rdmaRx
+  val rdmaRx = headerVerifier.io.tx.pktFrag
 
   val qpVec = qpIdxVec.map(qpIdx => {
     val qp = new QP(busWidth)
@@ -318,7 +319,7 @@ class RoCEv2(numMaxQPs: Int, busWidth: BusWidth.Value) extends Component {
   io.workComp << allQpModules.io.workComp
   allQpModules.io.rx << io.rx
 
-  val dma = new DmaHandler(busWidth)
+  val dma = new ExternalDmaHandler(busWidth)
   dma.io.dma.rd.req << allQpModules.io.dma.rd.req
   allQpModules.io.dma.rd.resp << dma.io.dma.rd.resp
   dma.io.dma.wr.req << allQpModules.io.dma.wr.req
@@ -332,7 +333,7 @@ object RoCEv2 {
     new SpinalConfig(
       defaultClockDomainFrequency = FixedFrequency(200 MHz),
       defaultConfigForClockDomains = ClockDomainConfig(resetKind = SYNC),
-//      inlineConditionalExpression = true,
+      inlineConditionalExpression = true,
 //      nameWhenByFile = false,
       mode = SystemVerilog,
       oneFilePerComponent = true,
@@ -340,7 +341,8 @@ object RoCEv2 {
       romReuse = true,
       targetDirectory = "./rtl",
       verbose = true
-    ).withoutEnumString()
+    )
+//      .withoutEnumString()
       .generate(new RoCEv2(numMaxQPs = 4, BusWidth.W512))
       .printPruned()
       .printPrunedIo()

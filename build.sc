@@ -4,7 +4,7 @@ import com.goyeau.mill.scalafix.ScalafixModule
 import mill._, scalalib._, scalafmt._
 // import mill.scalalib.bsp.ScalaMetalsSupport
 
-val spinalVersion = "1.7.0"
+val spinalVersion = "1.7.1"
 val scalaTestVersion = "3.2.11"
 val scalafixVersion = "0.10.0"
 val semanticDbVersion = "4.4.33"
@@ -108,11 +108,8 @@ object rocev2 extends CommonSpinalModule {
     override def ivyDeps = Agg(ivy"org.scalatest::scalatest:$scalaTestVersion")
 
     override def testFramework = "org.scalatest.tools.Framework"
-//    def testOnly(args: String*) = T.command {
+//    def testSim(args: String*) = T.command {
 //      super.runMain("org.scalatest.run", args: _*)
 //    }
-    def testSim(args: String*) = T.command {
-      super.runMain("org.scalatest.run", args: _*)
-    }
   }
 }

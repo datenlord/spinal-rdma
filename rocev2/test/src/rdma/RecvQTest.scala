@@ -9,6 +9,7 @@ import org.scalatest.AppendedClues._
 
 import scala.collection.mutable
 import ConstantSettings._
+import AckTypeSim._
 import AethSim._
 import OpCodeSim._
 import PsnSim._
@@ -1465,7 +1466,7 @@ class ReqSplitterAndNakGenTest extends AnyFunSuite {
           if (inputHasNak) {
             dut.io.rx.reqWithRxBufAndDmaInfoWithLenCheck.ackAeth
               .setAs(inputNakType)
-            if (AckTypeSim.isRetryNak(inputNakType)) {
+            if (inputNakType.isRetryNak()) {
               dut.io.rx.reqWithRxBufAndDmaInfoWithLenCheck.rxBufValid #= false
             }
           }
@@ -1536,7 +1537,7 @@ class ReqSplitterAndNakGenTest extends AnyFunSuite {
         MiscUtils.checkConditionAlways(dut.clockDomain)(
           !dut.io.txSendWrite.reqWithRxBufAndDmaInfoWithLenCheck.valid.toBoolean
         )
-        if (AckTypeSim.isRetryNak(inputNakType)) {
+        if (inputNakType.isRetryNak()) {
 //          MiscUtils.checkConditionAlways(dut.clockDomain)(
 //            !dut.io.sendWriteWorkCompErrAndNak.valid.toBoolean
 //          )
@@ -3515,7 +3516,7 @@ class RqOutTest extends AnyFunSuite {
       inputOutPsnQueue: mutable.Queue[PSN],
       readRespOnly: Boolean
   ): Unit =
-    for (_ <- 0 until MAX_PENDING_REQ_NUM) {
+    for (_ <- 0 until MAX_PENDING_WORK_REQ_NUM) {
       val _ = payloadFragNumItr.next()
       val pktNum = pktNumItr.next()
       val psnStart = psnStartItr.next()
@@ -4008,7 +4009,7 @@ class RecvQTest extends AnyFunSuite {
       dut.reqCommCheck.io.tx.checkRst.hasNak.simPublic()
       dut.reqCommCheck.clearFlushStage.isReadAtomicRstCacheFull.simPublic()
       dut.reqCommCheck.io.txDupReq.pktFrag.valid.simPublic()
-      //      dut.reqCommCheck.checkStage.pendingReqNum.simPublic()
+//      dut.reqCommCheck.checkStage.pendingReqNum.simPublic()
 
       dut.reqRnrCheck.io.tx.reqWithRxBuf.valid.simPublic()
       dut.reqRnrCheck.io.tx.reqWithRxBuf.hasNak.simPublic()
@@ -4534,9 +4535,9 @@ class RecvQTest extends AnyFunSuite {
                   _, // headerLenBytes,
                   opcode
               ) =>
-                //                  println(
-                //                    f"${simTime()} time: PSN=${psn}%X, opcode=${opcode}, fragLast=${fragLast}"
-                //                  )
+//                  println(
+//                    f"${simTime()} time: PSN=${psn}%X, opcode=${opcode}, fragLast=${fragLast}"
+//                  )
                 normalReqQueue.enqueue(
                   (
                     psn,
@@ -4574,9 +4575,9 @@ class RecvQTest extends AnyFunSuite {
                   _, // headerLenBytes,
                   opcode
               ) =>
-                //                println(
-                //                  f"${simTime()} time: PSN=${psn}%X, opcode=${opcode}, pktNum=${pktNum}%X, payloadLenBytes=${payloadLenBytes}%X"
-                //                )
+//                println(
+//                  f"${simTime()} time: PSN=${psn}%X, opcode=${opcode}, pktNum=${pktNum}%X, payloadLenBytes=${payloadLenBytes}%X"
+//                )
 
                 normalReqQueue.enqueue(
                   (
@@ -4626,9 +4627,9 @@ class RecvQTest extends AnyFunSuite {
               expectedReadRespQueue.isEmpty && expectedAtomicRespQueue.isEmpty
             }
           }
-          //          println(
-          //            f"${simTime()} time: normal responses done, dut.io.qpAttr.epsn=${dut.io.qpAttr.epsn.toInt}%X, dut.io.qpAttr.rqOutPsn=${dut.io.qpAttr.rqOutPsn.toInt}%X, start retry"
-          //          )
+//          println(
+//            f"${simTime()} time: normal responses done, dut.io.qpAttr.epsn=${dut.io.qpAttr.epsn.toInt}%X, dut.io.qpAttr.rqOutPsn=${dut.io.qpAttr.rqOutPsn.toInt}%X, start retry"
+//          )
 
           val ePsn = dut.io.qpAttr.epsn.toInt
           val rqOutPsn = dut.io.qpAttr.rqOutPsn.toInt
@@ -4664,9 +4665,9 @@ class RecvQTest extends AnyFunSuite {
           dut.io.qpAttr.rqOutPsn.toInt shouldBe rqOutPsn withClue
             f"${simTime()} time: after retry, rqOutPsn=${dut.io.qpAttr.rqOutPsn.toInt} should remain @ ${rqOutPsn}"
 
-          //          println(
-          //            f"${simTime()} time: retry responses done, dut.io.qpAttr.epsn=${dut.io.qpAttr.epsn.toInt}%X, dut.io.qpAttr.rqOutPsn=${dut.io.qpAttr.rqOutPsn.toInt}%X, finish retry"
-          //          )
+//          println(
+//            f"${simTime()} time: retry responses done, dut.io.qpAttr.epsn=${dut.io.qpAttr.epsn.toInt}%X, dut.io.qpAttr.rqOutPsn=${dut.io.qpAttr.rqOutPsn.toInt}%X, finish retry"
+//          )
           normalReqQueue.clear()
           normalAckQueue.clear()
           normalReadRespQueue.clear()
@@ -4700,13 +4701,13 @@ class RecvQTest extends AnyFunSuite {
           pktFrag.mty #= mty
           pktFrag.last #= fragLast
 
-          //          if (opcode.isReadReqPkt()) {
-          //            val (virtualAddr, rKey, pktLen) =
-          //              RethSim.extract(pktFragData, busWidth)
-          //            println(
-          //              f"${simTime()} time: PSN=${psn}%X, opcode=${opcode}, virtualAddr=${virtualAddr}%X, rKey=${rKey}%X, pktLen=${pktLen}%X"
-          //            )
-          //          }
+//          if (opcode.isReadReqPkt()) {
+//            val (virtualAddr, rKey, pktLen) =
+//              RethSim.extract(pktFragData, busWidth)
+//            println(
+//              f"${simTime()} time: PSN=${psn}%X, opcode=${opcode}, virtualAddr=${virtualAddr}%X, rKey=${rKey}%X, pktLen=${pktLen}%X"
+//            )
+//          }
 
           val reqValid = true
           reqValid
@@ -4714,12 +4715,12 @@ class RecvQTest extends AnyFunSuite {
       )
 
       onStreamFire(dut.io.rx.pktFrag, dut.clockDomain) {
-        //        val opcode = OpCode(dut.io.rx.pktFrag.bth.opcodeFull.toInt)
-        //        val ackreq = dut.io.rx.pktFrag.bth.ackreq.toBoolean
-        //        val fragLast = dut.io.rx.pktFrag.last.toBoolean
-        //        println(
-        //          f"${simTime()} time: input opcode=${opcode}, PSN=${dut.io.rx.pktFrag.bth.psn.toInt}%X, ePSN=${dut.io.qpAttr.epsn.toInt}%X, fragLast=${fragLast}, ackreq=${ackreq}"
-        //        )
+//        val opcode = OpCode(dut.io.rx.pktFrag.bth.opcodeFull.toInt)
+//        val ackreq = dut.io.rx.pktFrag.bth.ackreq.toBoolean
+//        val fragLast = dut.io.rx.pktFrag.last.toBoolean
+//        println(
+//          f"${simTime()} time: input opcode=${opcode}, PSN=${dut.io.rx.pktFrag.bth.psn.toInt}%X, ePSN=${dut.io.qpAttr.epsn.toInt}%X, fragLast=${fragLast}, ackreq=${ackreq}"
+//        )
       }
 
       streamMasterDriverAlwaysValid(dut.io.rxWorkReq, dut.clockDomain) {
@@ -4754,9 +4755,9 @@ class RecvQTest extends AnyFunSuite {
           SpinalExit(f"${simTime()} time: invalid opcode=${opcode}, PSN=${psn}")
         }
 
-        //        println(
-        //          f"${simTime()} time: response: opcode=${opcode}, PSN=${psn}"
-        //        )
+//        println(
+//          f"${simTime()} time: response: opcode=${opcode}, PSN=${psn}"
+//        )
       }
 
       // TODO: support atomic requests
@@ -4768,13 +4769,13 @@ class RecvQTest extends AnyFunSuite {
       )
 
       if (sendWriteOrReadAtomic) {
-        //          MiscUtils.checkCondChangeOnceAndHoldAfterwards(
-        //            dut.clockDomain,
-        //            cond =
-        //              dut.io.rx.pktFrag.valid.toBoolean && dut.io.rx.pktFrag.ready.toBoolean,
-        //            clue =
-        //              f"${simTime()} time: dut.io.rx.pktFrag.fire=${dut.io.rx.pktFrag.valid.toBoolean && dut.io.rx.pktFrag.ready.toBoolean} should be true always when sendWriteOrReadAtomic=${sendWriteOrReadAtomic}"
-        //          )
+//          MiscUtils.checkCondChangeOnceAndHoldAfterwards(
+//            dut.clockDomain,
+//            cond =
+//              dut.io.rx.pktFrag.valid.toBoolean && dut.io.rx.pktFrag.ready.toBoolean,
+//            clue =
+//              f"${simTime()} time: dut.io.rx.pktFrag.fire=${dut.io.rx.pktFrag.valid.toBoolean && dut.io.rx.pktFrag.ready.toBoolean} should be true always when sendWriteOrReadAtomic=${sendWriteOrReadAtomic}"
+//          )
       } else { // For read/atomic requests
         MiscUtils.checkConditionAlwaysHold(dut.clockDomain)(
           cond = !dut.io.sendWriteWorkComp.valid.toBoolean,
@@ -4890,9 +4891,9 @@ class RecvQTest extends AnyFunSuite {
                 _, // headerLenBytes,
                 opcode
             ) =>
-              //              println(
-              //                f"${simTime()} time: PSN=${psn}%X, opcode=${opcode}, respPktNum=${respPktNum}%X"
-              //              )
+//              println(
+//                f"${simTime()} time: PSN=${psn}%X, opcode=${opcode}, respPktNum=${respPktNum}%X"
+//              )
 
               val pktFragData = dut.io.rx.pktFrag.data.toBigInt
               normalReqQueue.enqueue(
@@ -4979,9 +4980,9 @@ class RecvQTest extends AnyFunSuite {
                 if (isWrongRetryAtomicReq) {
                   val (virtualAddr, rKey, atomicSwap, atomicComp) =
                     AtomicEthSim.extract(pktFragData, busWidth)
-                  //                  println(
-                  //                    f"${simTime()} time: virtualAddr=${virtualAddr}%X, rKey=${rKey}%X, atomicSwap=${atomicSwap}%X, atomicComp=${atomicComp}%X"
-                  //                  )
+//                  println(
+//                    f"${simTime()} time: virtualAddr=${virtualAddr}%X, rKey=${rKey}%X, atomicSwap=${atomicSwap}%X, atomicComp=${atomicComp}%X"
+//                  )
 
                   // Duplicated atomic requests not match original ones have no responses
                   val wrongRetryAtomicReqPktFragData = AtomicEthSim.set(
@@ -5060,9 +5061,9 @@ class RecvQTest extends AnyFunSuite {
           dut.io.qpAttr.rqOutPsn.toInt shouldBe rqOutPsn withClue
             f"${simTime()} time: after retry, rqOutPsn=${dut.io.qpAttr.rqOutPsn.toInt} should remain @ ${rqOutPsn}"
 
-          //          println(
-          //            f"${simTime()} time: retry responses done, dut.io.qpAttr.epsn=${dut.io.qpAttr.epsn.toInt}%X, dut.io.qpAttr.rqOutPsn=${dut.io.qpAttr.rqOutPsn.toInt}%X, finish retry"
-          //          )
+//          println(
+//            f"${simTime()} time: retry responses done, dut.io.qpAttr.epsn=${dut.io.qpAttr.epsn.toInt}%X, dut.io.qpAttr.rqOutPsn=${dut.io.qpAttr.rqOutPsn.toInt}%X, finish retry"
+//          )
 
           normalReqQueue.clear()
           partialRetryReadAndMaybeWrongRetryAtomicReqQueue.clear()
@@ -5099,18 +5100,18 @@ class RecvQTest extends AnyFunSuite {
           pktFrag.mty #= mty
           pktFrag.last #= fragLast
 
-          //          if (opcode.isReadReqPkt()) {
-          //            val (virtualAddr, rKey, pktLen) =
-          //              RethSim.extract(pktFragData, busWidth)
-          //            println(
-          //              f"${simTime()} time: PSN=${psn}%X, opcode=${opcode}, virtualAddr=${virtualAddr}%X, rKey=${rKey}%X, pktLen=${pktLen}%X"
-          //            )
-          //          } else if (opcode.isAtomicReqPkt()) {
-          //            val (virtualAddr, rKey, atomicSwap, atomicComp) = AtomicEthSim.extract(pktFragData, busWidth)
-          //            println(
-          //              f"${simTime()} time: PSN=${psn}%X, opcode=${opcode}, virtualAddr=${virtualAddr}%X, rKey=${rKey}%X, atomicSwap=${atomicSwap}%X, atomicComp=${atomicComp}%X"
-          //            )
-          //          }
+//          if (opcode.isReadReqPkt()) {
+//            val (virtualAddr, rKey, pktLen) =
+//              RethSim.extract(pktFragData, busWidth)
+//            println(
+//              f"${simTime()} time: PSN=${psn}%X, opcode=${opcode}, virtualAddr=${virtualAddr}%X, rKey=${rKey}%X, pktLen=${pktLen}%X"
+//            )
+//          } else if (opcode.isAtomicReqPkt()) {
+//            val (virtualAddr, rKey, atomicSwap, atomicComp) = AtomicEthSim.extract(pktFragData, busWidth)
+//            println(
+//              f"${simTime()} time: PSN=${psn}%X, opcode=${opcode}, virtualAddr=${virtualAddr}%X, rKey=${rKey}%X, atomicSwap=${atomicSwap}%X, atomicComp=${atomicComp}%X"
+//            )
+//          }
 
           val reqValid = true
           reqValid
@@ -5118,12 +5119,12 @@ class RecvQTest extends AnyFunSuite {
       )
 
       onStreamFire(dut.io.rx.pktFrag, dut.clockDomain) {
-        //        val opcode = OpCode(dut.io.rx.pktFrag.bth.opcodeFull.toInt)
-        //        val ackreq = dut.io.rx.pktFrag.bth.ackreq.toBoolean
-        //        val fragLast = dut.io.rx.pktFrag.last.toBoolean
-        //        println(
-        //          f"${simTime()} time: input opcode=${opcode}, PSN=${dut.io.rx.pktFrag.bth.psn.toInt}%X, ePSN=${dut.io.qpAttr.epsn.toInt}%X, fragLast=${fragLast}, ackreq=${ackreq}"
-        //        )
+//        val opcode = OpCode(dut.io.rx.pktFrag.bth.opcodeFull.toInt)
+//        val ackreq = dut.io.rx.pktFrag.bth.ackreq.toBoolean
+//        val fragLast = dut.io.rx.pktFrag.last.toBoolean
+//        println(
+//          f"${simTime()} time: input opcode=${opcode}, PSN=${dut.io.rx.pktFrag.bth.psn.toInt}%X, ePSN=${dut.io.qpAttr.epsn.toInt}%X, fragLast=${fragLast}, ackreq=${ackreq}"
+//        )
       }
 
       streamSlaveAlwaysReady(dut.io.tx.pktFrag, dut.clockDomain)
